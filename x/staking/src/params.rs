@@ -113,7 +113,7 @@ impl From<StakingParams> for inner::Params {
 impl Default for StakingParams {
     fn default() -> Self {
         let bond_denom =
-            Denom::try_from("uatom".to_string()).expect("default denom should be valid");
+            Denom::try_from("uAZX".to_string()).expect("default denom should be valid");
         StakingParams {
             // 3 weeks
             unbonding_time: 60_000_000_000 * 60 * 24 * 7 * 3,
