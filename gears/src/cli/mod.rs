@@ -3,7 +3,7 @@ use std::io::Write;
 use clap::{Args, Command, CommandFactory, Subcommand};
 pub use clap_complete::Shell;
 use clap_complete::{generate, Generator};
-use human_panic::setup_panic;
+// use human_panic::setup_panic;
 
 use crate::{
     application::ApplicationInfo,
@@ -64,7 +64,7 @@ where
         ) -> anyhow::Result<()>,
         executor: impl FnOnce(CliAppCommands<T, CliAppAUX>) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        setup_panic!();
+        // setup_panic!();
 
         match self.command {
             CliCommands::Cli(command) => match command {
