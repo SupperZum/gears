@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     application::{handlers::node::ABCIHandler, ApplicationInfo},
-    context::{simple::SimpleContext, tx::TxContext},
+    context::{query::QueryContext, simple::SimpleContext, tx::TxContext},
     error::POISONED_LOCK,
     params::ParamsSubspaceKey,
     types::{
@@ -18,7 +18,10 @@ use crate::{
 use bytes::Bytes;
 use database::Database;
 use errors::QueryError;
-use kv_store::bank::multi::{ApplicationMultiBank, TransactionMultiBank};
+use kv_store::{
+    bank::multi::{ApplicationMultiBank, TransactionMultiBank},
+    query::QueryMultiStore,
+};
 use mode::build_tx_gas_meter;
 use tendermint::types::{
     chain_id::ChainId,
@@ -46,8 +49,9 @@ pub use query::*;
 #[derive(Debug, Clone)]
 pub struct BaseApp<DB: Database, PSK: ParamsSubspaceKey, H: ABCIHandler, AI: ApplicationInfo> {
     state: Arc<RwLock<ApplicationState<DB, H>>>,
+    multi_store: Arc<RwLock<ApplicationMultiBank<DB, H::StoreKey>>>,
     abci_handler: H,
-    block_header: Arc<RwLock<Option<Header>>>, // passed by Tendermint in call to begin_block
+    block_header: Arc<RwLock<Header>>, // passed by Tendermint in call to begin_block
     baseapp_params_keeper: BaseAppParamsKeeper<PSK>,
     options: NodeOptions,
     _info_marker: PhantomData<AI>,
@@ -57,7 +61,11 @@ impl<DB: Database, PSK: ParamsSubspaceKey, H: ABCIHandler, AI: ApplicationInfo>
     BaseApp<DB, PSK, H, AI>
 {
     pub fn new(db: DB, params_subspace_key: PSK, abci_handler: H, options: NodeOptions) -> Self {
-        let mut multi_store = ApplicationMultiBank::new(db);
+        let multi_store = ApplicationMultiBank::new(Arc::new(db));
+        let mut multi_store = match multi_store {
+            Ok(ms) => ms,
+            Err(err) => panic!("Failed to init MultiStore with err: {err}"),
+        };
 
         let baseapp_params_keeper = BaseAppParamsKeeper {
             params_subspace_key,
@@ -73,24 +81,25 @@ impl<DB: Database, PSK: ParamsSubspaceKey, H: ABCIHandler, AI: ApplicationInfo>
 
         Self {
             abci_handler,
-            block_header: Arc::new(RwLock::new(None)),
+            block_header: Arc::new(RwLock::new(Default::default())),
             baseapp_params_keeper,
             state: Arc::new(RwLock::new(ApplicationState::new(
                 Gas::from(max_gas),
-                multi_store,
+                &multi_store,
             ))),
+            multi_store: Arc::new(RwLock::new(multi_store)),
             options,
             _info_marker: PhantomData,
         }
     }
 
-    fn get_block_header(&self) -> Option<Header> {
+    fn get_block_header(&self) -> Header {
         self.block_header.read().expect(POISONED_LOCK).clone()
     }
 
     fn set_block_header(&self, header: Header) {
         let mut current_header = self.block_header.write().expect(POISONED_LOCK);
-        *current_header = Some(header);
+        *current_header = header;
     }
 
     fn run_query(&self, request: &RequestQuery) -> Result<Bytes, QueryError> {
@@ -100,7 +109,8 @@ impl<DB: Database, PSK: ParamsSubspaceKey, H: ABCIHandler, AI: ApplicationInfo>
             .try_into()
             .map_err(|_| QueryError::InvalidHeight)?;
 
-        let ctx = self.state.read().expect(POISONED_LOCK).query_ctx(version)?;
+        let store = self.multi_store.read().expect(POISONED_LOCK);
+        let ctx = QueryContext::new(QueryMultiStore::new(&*store, version)?, version)?;
 
         self.abci_handler
             .query(&ctx, request.clone())
@@ -118,9 +128,7 @@ impl<DB: Database, PSK: ParamsSubspaceKey, H: ABCIHandler, AI: ApplicationInfo>
                 RunTxError::InvalidTransaction(e.to_string())
             })?;
 
-        let header = self
-            .get_block_header()
-            .expect("block header is set in begin block"); //TODO: return error
+        let header = self.get_block_header();
         let height = header.height;
 
         let consensus_params = {
